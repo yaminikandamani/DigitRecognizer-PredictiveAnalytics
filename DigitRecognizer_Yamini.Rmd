@@ -1,0 +1,285 @@
+# Digit Recognizer in R
+
+## Introduction
+
+The goal of this project is to take an image of a handwritten single digit, and determine what that digit is.  The data for this Project was taken from the MNIST dataset. 
+
+The MNIST ("Modified National Institute of Standards and Technology") dataset is a classic within the Machine Learning community that has been extensively studied.  More detail about the dataset, including Machine Learning algorithms that have been tried on it and their levels of success, can be found at http://yann.lecun.com/exdb/mnist/index.html.
+
+![Image provided by the MNIST handwritten databse](http://nikhilbuduma.com/img/mnist.gif)
+
+```{r readin}
+#install.packages("readr")
+library(readr)
+setwd("/Users/rameshthulasiram/Documents/yams_predictiveAnalytics/FinalProject_digitrecognizer")
+train <- read_csv("train.csv")
+test <- read_csv("test.csv")
+head(train[1:10])
+```
+As always, first I read in data and take a look at it. The `train.csv` has one digit label column and 784 columns with pixel color values that go from 0 to 255.
+
+```{r}
+dim(train) #29400 obs. of  784 variables:
+dim(test) # 28000 obs. of  784 variables
+```
+
+##Challenges in traditional Machine Learning: 
+*Feature extraction - the programmer needs to tell the computer what kinds of things it should be looking for that will be informative in making a decision. Feeding the algorithm raw data rarely ever works, so feature extraction is a critical part of the traditional machine learning workflow. This places a huge burden on the programmer, and the algorithm's effectiveness relies heavily on how insightful the programmer is. For complex problems such as object recognition or handwriting recognition, this is a huge challenge. 
+
+
+## There are 3 ways to handle such large datasets: 
+
+1. Deep learning : Deep learning is one of the only methods by which we can circumvent the challenges of feature extraction. This is because deep learning models are capable of learning to focus on the right features by themselves, requiring little guidance from the programmer. This makes deep learning an extremely powerful tool for modern machine learning. Deep learning is a form of machine learning that uses a model of computing that's very much inspired by the structure of the brain. Hence we call this model a neural network.
+
+2. PCA + Neural Networks : PCA is a classy way to reduce the dimensionality of the data, while (purportedly) keeping most of the information. PCA uses orthogonal transformation to convert a set of observations of possibly correlated variables into a set of values of linearly uncorrelated variables called principal components. 
+
+3. Random Forests : Ensemle learning method that Averages multiple decision trees each created on different random samples of rows and samples. 
+
+
+## Table of Contents
+- 1. Data Preprocessing
+- 2. Train, Predict and Save
+- 3. Conclusion
+
+## Data Preprocessing
+
+We can quickly plot the pixel color values to obtain a picture of the digit.
+
+```{r plotimage}
+# Create a 28*28 matrix with pixel color values
+m = matrix(unlist(train[10,-1]),nrow = 28,byrow = T)
+# Plot that matrix
+image(m,col=grey.colors(255))
+```
+
+This image needs to be rotated to the right. I will rotate the matrix and plot a bunch of images.
+```{r plotimages}
+rotate <- function(x) t(apply(x, 2, rev)) # reverses (rotates the matrix)
+
+# Plot a bunch of images
+par(mfrow=c(2,3))
+lapply(1:6, 
+    function(x) image(
+                    rotate(matrix(unlist(train[x,-1]),nrow = 28,byrow = T)),
+                    col=grey.colors(255),
+                    xlab=train[x,1]
+                )
+)
+par(mfrow=c(1,1)) # set plot options back to default
+```
+
+## Deep Learning using H2O 
+
+## Train, Predict and Save
+h2o uses virtual Java clusters to do its work and achieve amazingly quick performance. Below code initializes a local cluster.I referred to documentation on https://github.com/h2oai/h2o-3/blob/master/h2o-docs/src/booklets/v2_2015/PDFs/online/R_Vignette.pdf 
+
+```{r h2o-cluster, warning=F}
+#install.packages("h2o")
+library(h2o)
+
+## start a local h2o cluster
+localH2O = h2o.init(max_mem_size = '6g', # use 6GB of RAM of *GB available
+                    nthreads = -1) # use all CPUs- strongly recommended. 
+```
+
+Now, I just convert the `train` and `test` sets into the h2o format and set up the model. The `h2o.deeplearning()` function has lots of configurable arguments. For demonstration I went with a two layer neural network with 100 nodes and 0.5 dropout ratio in each. While I could specify a learning rate I decided not to because it is adaptive by default which should result in an improved accuracy score.
+
+##Data preparation/Data munging
+
+Transfer the data from R to H2O instance. 
+
+```{r h2oinstance, message=F, warning=F}
+## MNIST data as H2O
+train[,1] = as.factor(train[,1]) # convert digit labels to factor for classification
+train_h2o = as.h2o(train)
+test_h2o = as.h2o(test)
+
+## set timer
+s <- proc.time()
+```
+
+
+
+## Train the model using Deep learning algorithm: 
+
+h20.deeplearning - performs deep learning neural networks on an H2O parsed Data object. 
+
+
+```{r train, message=F, warning=F}
+## train model
+model = h2o.deeplearning(x = 2:785,  # column numbers for predictors
+                   y = 1,   # column number for label
+                   training_frame = train_h2o, # data in H2O format
+                   activation = "RectifierWithDropout", # algorithm
+                   input_dropout_ratio = 0.2, # % of inputs dropout
+                   hidden_dropout_ratios = c(0.5,0.5), # % for nodes dropout
+                   balance_classes = TRUE, 
+                   hidden = c(100,100), # two layers of 100 nodes
+                   momentum_stable = 0.99,
+                   nesterov_accelerated_gradient = T, # use it for speed
+                   epochs = 15) # no. of epochs
+
+```
+
+##Model Accuracy and error rate 
+```{r metrics,message=FALSE,warning=FALSE}
+
+## print confusion matrix
+h2o.confusionMatrix(model)
+## print time elapsed
+s - proc.time()
+```
+
+After training the model we can look at the confusion matrix. The total error after 15 epochs is around `r h2o.confusionMatrix(model)$Error[11]` which translates to 1 - `r h2o.confusionMatrix(model)$Error[11]` = `r 1 - h2o.confusionMatrix(model)$Error[11]` accuracy score. The training process lasted for `r (s - proc.time())[3][[1]]` seconds. Good performance within a short period of time. 
+
+
+
+## Model Scoring 
+
+```{r savedata, message=F, warning=F}
+## classify test set
+h2o_y_test <- h2o.predict(model, test_h2o)
+
+## convert H2O format into data frame and  save as csv
+df_y_test = as.data.frame(h2o_y_test)
+df_y_test = data.frame(ImageId = seq(1,length(df_y_test$predict)), Label = df_y_test$predict)
+write.csv(df_y_test, file = "submission-r-h2o.csv", row.names=F)
+
+## shut down virutal H2O cluster
+h2o.shutdown(prompt = F)
+```
+
+### Interpretation 
+
+While using R to approach this problem I spent virtually no time on setting up the framework (in contrast to Python where it unpleasantly lasted). The exploratory analysis would have been quick and easy to do as well if I did any. However, I could not find an implementation of convolutional neural network in R. As a result, I settled for a two layer NN. 
+
+The best accuracy score I could get using the NN setup above was  1 - `r h2o.confusionMatrix(model)$Error[11]` = `r 1 - h2o.confusionMatrix(model)$Error[11]`.
+
+To train a one layer NN model with 100 nodes using the `nnet` package on a subset of data with 500 rows lasted for longer than half an hour. The whole process using the complete data took less than a minute using the `h2o` package. 
+
+R is great when it comes to exploratory analysis and data visualization. Since, everything is done in the memory there are immediate limits imposed on the scale of the problem. One of the ways to cope with this problem is to produce extensions like 'h2o` which for examples utilizes virtual Java clusters to do its work fast. 
+
+
+#Using PCA and neural network 
+
+```{r}
+X <- train[,-1]
+Y <- train[,1]
+trainlabel <- train[,1]
+#Reducing Train using PCA
+Xreduced <- X/255
+Xcov <- cov(Xreduced)
+pcaX <- prcomp(Xcov)
+# Creating a datatable to store and plot the
+# No of Principal Components vs Cumulative Variance Explained
+vexplained <- as.data.frame(pcaX$sdev^2/sum(pcaX$sdev^2))
+vexplained <- cbind(c(1:784),vexplained,cumsum(vexplained[,1]))
+colnames(vexplained) <- c("No_of_Principal_Components","Individual_Variance_Explained","Cumulative_Variance_Explained")
+#Plotting the curve using the datatable obtained
+plot(vexplained$No_of_Principal_Components,vexplained$Cumulative_Variance_Explained, xlim = c(0,100),type='b',pch=16,xlab = "Principal Componets",ylab = "Cumulative Variance Explained",main = 'Principal Components vs Cumulative Variance Explained')
+#Datatable to store the summary of the datatable obtained
+vexplainedsummary <- vexplained[seq(0,100,5),]
+vexplainedsummary
+#Storing the vexplainedsummary datatable in png format for future reference.
+library(gridExtra)
+png("datatablevaraince explained.png",height = 800,width =1000)
+p <-tableGrob(vexplainedsummary)
+grid.arrange(p)
+dev.off()
+Xfinal <- as.matrix(Xreduced) %*% pcaX$rotation[,1:45]
+dim(X)
+dim(Xfinal)
+
+#Making training labels as factors
+trainlabel <- as.factor(trainlabel)
+library(nnet)
+Y <- class.ind(Y)
+print(X[1:5,1:5])
+print(Y[1:5,])
+
+#We choose no_of_nodes=150 and max-iteration=130 (change it as a trade-off between running time and accuracy)
+
+#Training the nnet on totat_training_set
+finalseed <- 150
+set.seed(finalseed)
+model_final <- nnet(Xfinal[1:29400,],Y[1:29400,],size=150,softmax=TRUE,maxit=130,MaxNWts = 80000)
+
+#confusionMatrix
+library(caret)
+prediction_Y<- predict(model_final,Xfinal[29401:42000,],type="class")
+confusionMatrix(train[29401:42000,1],prediction_Y)
+
+
+#Load test to reduced and normalize it for predictions
+testlabel <- as.factor(test[,1])
+
+#Applying PCA to test set
+testreduced <- test/255
+testfinal <- as.matrix(testreduced) %*%  pcaX$rotation[,1:45]
+
+#Calculating Final Accuracies
+prediction <- predict(model_final,testfinal,type="class")
+prediction <- as.data.frame(prediction)
+finalprediction<- cbind(as.data.frame(1:nrow(prediction)),prediction)
+colnames(finalprediction) <- c("ImageId","Label")
+
+```
+
+### Interpretation 
+
+PCA is used to reduce the number of dimensions from 784 to 45, but still capture 99% of the variance and then predictive model using neural network is built on top of that and we get 96.9% accuracy. 
+
+
+# RandomForests
+
+
+###Create a simple random forest benchmark
+
+```{r}
+library(randomForest)
+library(readr)
+
+set.seed(0)
+
+train <- read_csv("train.csv")
+test <- read_csv("test.csv")
+
+numTrain <- 29400
+numTrees <- 25
+
+rows <- sample(1:nrow(train), numTrain)
+labels <- as.factor(train[rows,1])
+train <- train[rows,-1]
+
+rf <- randomForest(train, labels, xtest=test, ntree=numTrees)
+
+predictions <- data.frame(ImageId=1:nrow(test), Label=levels(labels)[rf$test$predicted])
+head(predictions)
+
+write_csv(predictions, "rf_benchmark.csv") 
+
+
+rf$ntree # Number of trees grown
+rf$mtry  # Number of predictors sampled for splitting at each node 
+
+confusionMatrix(labels,rf$predicted)
+
+
+```
+
+### Interpretation 
+
+Number of trees grown is 25 and Number of predictors sampled for splitting at each node is 28. The accuracy that we get from Random forests is around 93%. 
+
+##Conclusion
+
+From the models that I have built, PCA+neural networks gives the maximum accuracy of 97%.
+
+And there are so many more classes of problems that fall into this category. Recognizing objects, understanding concepts, comprehending speech. We don't know what program to write because we still don't know how it's done by our own brains. And even if we did have a good idea about how to do it, the program might be horrendously complicated. 
+
+So instead of trying to write a program, we try to develop an algorithm that a computer can use to look at hundreds or thousands of examples (and the correct answers), and then the computer uses that experience to solve the same problem in new situations. Essentially, our goal is to teach the computer to solve by example, very similar to how we might teach a young child to distinguish a cat from a dog. 
+
+Over the past few decades, computer scientists have developed a number of algorithms that try to allow computers to learn to solve problems through examples and in this project I have used a few algorithms like Deep learning, PCA, Neural networks and Random forests to solve this problem . 
+
+
+
